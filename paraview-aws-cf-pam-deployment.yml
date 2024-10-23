@@ -1,0 +1,179 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy Paraview PAM standalone instance running on RHEL 8.x on AWS
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select an existing VPC
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select a public subnet within the chosen VPC
+
+  InstanceType:
+    Type: String
+    Default: t2.xlarge
+    Description: EC2 instance type
+
+  PamAmiId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-0f6460a9f487ad4df
+    Description: AMI ID for the EC2 instance
+
+Resources:
+  PamWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  PamWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    Properties:
+      Handle: !Ref PamWaitHandle
+      Timeout: '2700'
+      Count: 1
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: para-pam-IAMRole-trial
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: para-pam-IAMPolicy-trial
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVpcs
+                Resource: '*'
+      Tags:
+        - Key: Name
+          Value: para-pam-IAMRole-trial
+
+  GetVpcCidrFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: para-pam-LambdaFunction-trial
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.12
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          def handler(event, context):
+              ec2 = boto3.client('ec2')
+              vpc_id = event['ResourceProperties']['VpcId']
+              try:
+                  response = ec2.describe_vpcs(VpcIds=[vpc_id])
+                  cidr_block = response['Vpcs'][0]['CidrBlock']
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {'VpcCidr': cidr_block})
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+      Timeout: 60
+      Tags:
+        - Key: Name
+          Value: para-pam-LambdaFunction-trial
+
+  VpcCidrCustomResource:
+    Type: Custom::GetVpcCidr
+    Properties:
+      ServiceToken: !GetAtt GetVpcCidrFunction.Arn
+      VpcId: !Ref VpcId
+
+  PamSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: para-pam-SecurityGroup-trial
+      GroupDescription: Security group with specific ingress rules
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Allow SSH (port 22) from anywhere
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+        # Allow HTTPS (port 443) from anywhere
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+        # Allow port 31504 - 31505 from anywhere
+        - IpProtocol: tcp
+          FromPort: 31504
+          ToPort: 31505
+          CidrIp: 0.0.0.0/0
+
+        # Allow port 20000 from anywhere
+        - IpProtocol: tcp
+          FromPort: 20000
+          ToPort: 20000
+          CidrIp: 0.0.0.0/0
+
+        # Allow all traffic within the VPC CIDR range
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !GetAtt VpcCidrCustomResource.VpcCidr
+      Tags:
+        - Key: Name
+          Value: para-pam-SecurityGroup-trial
+
+  PamElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: para-pam-EIP-trial
+
+  PamEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref PamAmiId
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref PamSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          cd /home/devops/latest
+          sudo bash ./auto_deploy.sh
+          cd /root/
+          rm -rf /home/devops
+          sudo userdel -rf devops
+          sleep 1m
+          echo "***end of ansible playbook deployment for PAM***"
+          /opt/aws/bin/cfn-signal -e $? '${PamWaitHandle}' 
+      Tags:
+        - Key: Name
+          Value: para-pam-EC2Instance-trial
+
+  PamEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt PamElasticIP.AllocationId
+      InstanceId: !Ref PamEC2Instance
+
+Outputs:
+  InstanceId:
+    Description: ID of the EC2 instance
+    Value: !Ref PamEC2Instance
+
+  PublicIP:
+    Description: Public IP address of the EC2 instance
+    Value: !Ref PamElasticIP
+
+  DeploymentMessage:
+    Description: The final output of the deployment
+    Value: !Sub |
+      Access portal: http://${PamElasticIP} with credentail: _sysadmin/Admin.123 Please contact marketing@paraviewsoft.com for the trial license. Thanks!
