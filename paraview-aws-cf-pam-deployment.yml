@@ -176,4 +176,4 @@ Outputs:
   DeploymentMessage:
     Description: The final output of the deployment
     Value: !Sub |
-      Access portal: http://${PamElasticIP} with credentail: _sysadmin/Admin.123 Please contact marketing@paraviewsoft.com for the trial license. Thanks!
+      Access portal: https://${PamElasticIP} with credentail: _sysadmin/Admin.123 Please contact marketing@paraviewsoft.com for the trial license. Thanks!
