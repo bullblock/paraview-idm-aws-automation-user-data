@@ -208,7 +208,7 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: !Ref JumpInstanceType
-      ImageId: ami-06b0051021a03a170
+      ImageId: ami-05ce35c13e5d17795
       SubnetId: !Ref SubnetId
       SecurityGroupIds:
         - !Ref JumpSecurityGroup
