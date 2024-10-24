@@ -260,4 +260,4 @@ Outputs:
   JumpDeploymentMessage:
     Description: The final output of the JumpServer deployment
     Value: !Sub |
-      Access portal: https://${JumpElasticIP} with credentail: admin/admin Please contact marketing@paraviewsoft.com for the trial license. Thanks!
+      Access portal: http://${JumpElasticIP} with credentail: admin/admin Please contact marketing@paraviewsoft.com for the trial license. Thanks!
