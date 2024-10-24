@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy Paraview PAM standalone instance running on RHEL 8.x on AWS
+Description: Deploy Paraview PAM + JumpServer on RHEL 8.x on AWS
 
 Parameters:
   VpcId:
@@ -10,24 +10,34 @@ Parameters:
     Type: AWS::EC2::Subnet::Id
     Description: Select a public subnet within the chosen VPC
 
-  InstanceType:
+  PamInstanceType:
     Type: String
     Default: t2.xlarge
-    Description: EC2 instance type
+    Description: PAM EC2 instance type
 
-  PamAmiId:
-    Type: AWS::EC2::Image::Id
-    Default: ami-0f6460a9f487ad4df
-    Description: AMI ID for the EC2 instance
+  JumpInstanceType:
+    Type: String
+    Default: m5.large
+    Description: JumpServer EC2 instance type
 
 Resources:
   PamWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  JumpWaitHandle:
     Type: AWS::CloudFormation::WaitConditionHandle
 
   PamWaitCondition:
     Type: AWS::CloudFormation::WaitCondition
     Properties:
       Handle: !Ref PamWaitHandle
+      Timeout: '2700'
+      Count: 1
+
+  JumpWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    Properties:
+      Handle: !Ref JumpWaitHandle
       Timeout: '2700'
       Count: 1
 
@@ -91,7 +101,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupName: para-pam-SecurityGroup-trial
-      GroupDescription: Security group with specific ingress rules
+      GroupDescription: Pam EC2 Security group with specific ingress rules
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         # Allow SSH (port 22) from anywhere
@@ -127,6 +137,34 @@ Resources:
         - Key: Name
           Value: para-pam-SecurityGroup-trial
 
+  JumpSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: para-jump-SecurityGroup-trial
+      GroupDescription: JumpServer EC2 Security group with specific ingress rules
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Allow SSH (port 22) from anywhere
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+        # Allow HTTP (port 80) from anywhere
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+        # Allow all traffic within the VPC CIDR range
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !GetAtt VpcCidrCustomResource.VpcCidr
+      Tags:
+        - Key: Name
+          Value: para-jump-SecurityGroup-trial
+
   PamElasticIP:
     Type: AWS::EC2::EIP
     Properties:
@@ -135,11 +173,19 @@ Resources:
         - Key: Name
           Value: para-pam-EIP-trial
 
+  JumpElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: para-jump-EIP-trial
+
   PamEC2Instance:
     Type: AWS::EC2::Instance
     Properties:
-      InstanceType: !Ref InstanceType
-      ImageId: !Ref PamAmiId
+      InstanceType: !Ref PamInstanceType
+      ImageId: ami-0f6460a9f487ad4df
       SubnetId: !Ref SubnetId
       SecurityGroupIds:
         - !Ref PamSecurityGroup
@@ -158,22 +204,60 @@ Resources:
         - Key: Name
           Value: para-pam-EC2Instance-trial
 
+  JumpEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref JumpInstanceType
+      ImageId: ami-06b0051021a03a170
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref JumpSecurityGroup
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          cd /home/devops/latest
+          ./auto_deploy.sh
+          echo "***end of ansible playbook deployment for JumpServer***"
+          /opt/aws/bin/cfn-signal -e $? '${JumpWaitHandle}' 
+      Tags:
+        - Key: Name
+          Value: para-jump-EC2Instance-trial
+
   PamEIPAssociation:
     Type: AWS::EC2::EIPAssociation
     Properties:
       AllocationId: !GetAtt PamElasticIP.AllocationId
       InstanceId: !Ref PamEC2Instance
 
-Outputs:
-  InstanceId:
-    Description: ID of the EC2 instance
-    Value: !Ref PamEC2Instance
+  JumpEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt JumpElasticIP.AllocationId
+      InstanceId: !Ref JumpEC2Instance
 
-  PublicIP:
-    Description: Public IP address of the EC2 instance
+Outputs:
+  PamInstanceId:
+    Description: ID of the PAM EC2 instance
+    Value: !Ref PamEC2Instance
+  
+  JumpInstanceId:
+    Description: ID of the JumpServer EC2 instance
+    Value: !Ref JumpEC2Instance
+
+  PamPublicIP:
+    Description: Public IP address of the PAM EC2 instance
     Value: !Ref PamElasticIP
 
-  DeploymentMessage:
-    Description: The final output of the deployment
+  JumpPublicIP:
+    Description: Public IP address of the JumpServer EC2 instance
+    Value: !Ref JumpElasticIP
+
+  PamDeploymentMessage:
+    Description: The final output of the Pam deployment
     Value: !Sub |
       Access portal: https://${PamElasticIP} with credentail: _sysadmin/Admin.123 Please contact marketing@paraviewsoft.com for the trial license. Thanks!
+
+  JumpDeploymentMessage:
+    Description: The final output of the JumpServer deployment
+    Value: !Sub |
+      Access portal: https://${JumpElasticIP} with credentail: admin/admin Please contact marketing@paraviewsoft.com for the trial license. Thanks!
